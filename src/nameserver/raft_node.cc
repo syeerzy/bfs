@@ -290,8 +290,8 @@ void RaftNodeImpl::ReplicateLogForNode(uint32_t id) {
     mu_.Unlock();
     int64_t max_index = 0;
     int64_t max_term = -1;
-    AppendEntriesRequest* request = new AppendEntriesRequest;
-    AppendEntriesResponse* response = new AppendEntriesResponse;
+    std::unique_ptr<AppendEntriesRequest> request(new AppendEntriesRequest);
+    std::unique_ptr<AppendEntriesResponse> response(new AppendEntriesResponse);
     request->set_term(current_term_);
     request->set_leader(self_);
     request->set_leader_commit(commit_index_);
@@ -332,7 +332,7 @@ void RaftNodeImpl::ReplicateLogForNode(uint32_t id) {
     RaftNode_Stub* node;
     rpc_client_->GetStub(nodes_[id], &node);
     bool ret = rpc_client_->SendRequest(node, &RaftNode_Stub::AppendEntries,
-                                        request, response, 1, 1);
+                                        request.get(), response.get(), 1, 1);
     LOG(INFO, "Replicate %d entrys to %s return %d",
         request->entries_size(), nodes_[id].c_str(), ret);
     delete node;
@@ -360,7 +360,6 @@ void RaftNodeImpl::ReplicateLogForNode(uint32_t id) {
                     int64_t commit_index = match_index[mid_pos];
                     //LOG(INFO, "match vector[ %ld %ld %ld ]",
                     //    match_index[0], match_index[1], match_index[2]);
-                    assert(commit_index >= commit_index_);
                     if (commit_index > commit_index_) {
                         LOG(INFO, "Update commit_index from %ld to %ld",
                             commit_index_, commit_index);
@@ -567,7 +566,15 @@ void RaftNodeImpl::AppendEntries(::google::protobuf::RpcController* controller,
             request->leader().c_str(), term,
             request->entries(0).log_data().c_str(), leader_commit);
         for (int i = 0; i < entry_count; i++) {
-            int64_t index =request->entries(i).index();
+            int64_t index = request->entries(i).index();
+            if (log_index_ >= index) {
+                LOG(INFO, "[raft] Ignore duplicate entry %ld, last log_index: %ld",
+                    index, log_index_);
+                continue;
+            } else if (log_index_ + 1 != index && log_index_ != -1) {
+                LOG(FATAL, "[Raft] Wrong index %ld in AppendEntries, last log_index: %ld",
+                    index, log_index_);
+            }
             bool ret = StoreLog(current_term_, index,
                                 request->entries(i).log_data());
             log_index_ = index;
